@@ -142,7 +142,16 @@ export class Renderer {
     this.world.dirty = [];
   }
 
-  render(sim: Sim): void {
+  /** Convert a screen (CSS px) position to world tile coordinates. */
+  screenToWorld(sx: number, sy: number): { x: number; y: number } {
+    const rect = this.canvas.getBoundingClientRect();
+    return {
+      x: this.cx + (sx - rect.left - rect.width / 2) / this.zoom,
+      y: this.cy + (sy - rect.top - rect.height / 2) / this.zoom,
+    };
+  }
+
+  render(sim: Sim, selected?: { x: number; y: number } | null): void {
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
     const rect = this.canvas.getBoundingClientRect();
     const pw = Math.round(rect.width * dpr);
@@ -198,6 +207,15 @@ export class Renderer {
       ctx.fill();
       if (this.zoom > 8) ctx.stroke();
     }
+
+    if (selected) {
+      const pulse = 0.55 + 0.12 * Math.sin(performance.now() / 220);
+      ctx.strokeStyle = '#ffe08a';
+      ctx.lineWidth = Math.max(0.08, 1.5 * px);
+      ctx.beginPath();
+      ctx.arc(selected.x, selected.y, Math.max(pulse, 5 * px), 0, Math.PI * 2);
+      ctx.stroke();
+    }
   }
 
   private clampCamera(vw: number, vh: number): void {
@@ -211,15 +229,31 @@ export class Renderer {
     if (vh / this.zoom > this.world.h + pad * 2) this.cy = this.world.h / 2;
   }
 
-  /** Attach touch (pan/pinch) and mouse (drag/wheel) camera controls. */
-  attachInput(): void {
+  /**
+   * Attach touch (pan/pinch) and mouse (drag/wheel) camera controls.
+   * A short single-pointer press without movement fires onTap with the
+   * tapped world position.
+   */
+  attachInput(onTap?: (wx: number, wy: number) => void): void {
     const el = this.canvas;
     const pointers = new Map<number, { x: number; y: number }>();
     let lastPinchDist = 0;
+    let gesturePointers = 0; // max simultaneous pointers in this gesture
+    let downAt = 0;
+    let downX = 0;
+    let downY = 0;
+    let moved = 0;
 
     el.addEventListener('pointerdown', (e) => {
       el.setPointerCapture(e.pointerId);
       pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      gesturePointers = Math.max(gesturePointers, pointers.size);
+      if (pointers.size === 1) {
+        downAt = performance.now();
+        downX = e.clientX;
+        downY = e.clientY;
+        moved = 0;
+      }
       if (pointers.size === 2) {
         const [a, b] = [...pointers.values()];
         lastPinchDist = Math.hypot(a.x - b.x, a.y - b.y);
@@ -231,6 +265,7 @@ export class Renderer {
       if (pointers.size === 1) {
         this.cx -= (e.clientX - prev.x) / this.zoom;
         this.cy -= (e.clientY - prev.y) / this.zoom;
+        moved = Math.max(moved, Math.hypot(e.clientX - downX, e.clientY - downY));
       }
       pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
       if (pointers.size === 2) {
@@ -246,12 +281,26 @@ export class Renderer {
         lastPinchDist = dist;
       }
     });
-    const lift = (e: PointerEvent) => {
+    el.addEventListener('pointerup', (e) => {
       pointers.delete(e.pointerId);
       lastPinchDist = 0;
-    };
-    el.addEventListener('pointerup', lift);
-    el.addEventListener('pointercancel', lift);
+      if (pointers.size === 0) {
+        const isTap =
+          gesturePointers === 1 &&
+          moved < 8 &&
+          performance.now() - downAt < 450;
+        gesturePointers = 0;
+        if (isTap && onTap) {
+          const p = this.screenToWorld(e.clientX, e.clientY);
+          onTap(p.x, p.y);
+        }
+      }
+    });
+    el.addEventListener('pointercancel', (e) => {
+      pointers.delete(e.pointerId);
+      lastPinchDist = 0;
+      if (pointers.size === 0) gesturePointers = 0;
+    });
 
     el.addEventListener(
       'wheel',

@@ -6,7 +6,7 @@ import {
   YIELD,
   type AnimalSpec,
 } from './config';
-import { mulberry32, type Rng } from './rng';
+import { mulberry32, pick, type Rng } from './rng';
 import { Terrain, World } from './world';
 
 export type Sex = 'm' | 'f';
@@ -21,6 +21,7 @@ export type HumanState =
 
 export interface Human {
   id: number;
+  name: string;
   x: number;
   y: number;
   sex: Sex;
@@ -51,9 +52,11 @@ export interface Animal {
   hunger: number;
   tx: number;
   ty: number;
-  huntId: number; // wolves: prey animal id; -2 means hunting a human
+  huntId: number; // wolves: prey animal id
   huntHumanId: number;
   mateCooldown: number;
+  /** transient, refreshed every tick — herbivore currently running from a wolf */
+  fleeing: boolean;
 }
 
 export interface Hut {
@@ -133,9 +136,17 @@ export class Sim {
     }
   }
 
+  private makeName(): string {
+    const parts = ['ka', 'ru', 'mi', 'ta', 'lo', 'ne', 'sa', 'el', 'ri', 'on', 'ba', 'du', 'we', 'na'];
+    let n = pick(this.rng, parts) + pick(this.rng, parts);
+    if (this.rng() < 0.4) n += pick(this.rng, parts);
+    return n[0].toUpperCase() + n.slice(1);
+  }
+
   private makeHuman(x: number, y: number, sex: Sex, age: number): Human {
     return {
       id: this.nextId++,
+      name: this.makeName(),
       x,
       y,
       sex,
@@ -189,6 +200,7 @@ export class Sim {
         huntId: -1,
         huntHumanId: -1,
         mateCooldown: Math.floor(this.rng() * ANIMALS[kind].mateCooldown),
+        fleeing: false,
       });
     }
   }
@@ -642,6 +654,7 @@ export class Sim {
 
     // Herbivores: flee danger first, otherwise graze/wander.
     const threat = this.nearestAnimal(a.x, a.y, spec.fleeRadius, (o) => o.kind === 'wolf');
+    a.fleeing = !!threat;
     if (threat) {
       const ang = Math.atan2(a.y - threat.y, a.x - threat.x);
       a.tx = a.x + Math.cos(ang) * 4;
@@ -797,6 +810,7 @@ export class Sim {
           huntId: -1,
           huntHumanId: -1,
           mateCooldown: spec.mateCooldown,
+          fleeing: false,
         });
       }
     }

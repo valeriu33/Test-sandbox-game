@@ -96,6 +96,72 @@
         min-width: 44px;
         font-size: 18px;
       }
+      #inspector {
+        position: absolute;
+        left: 50%;
+        transform: translateX(-50%);
+        bottom: calc(64px + max(10px, env(safe-area-inset-bottom)));
+        width: min(340px, calc(100vw - 20px));
+        background: rgba(8, 12, 26, 0.88);
+        border: 1px solid rgba(255, 255, 255, 0.16);
+        border-radius: 14px;
+        padding: 10px 12px;
+        backdrop-filter: blur(6px);
+        display: none;
+        pointer-events: auto;
+      }
+      #inspector.open {
+        display: block;
+      }
+      #inspector .head {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 15px;
+        font-weight: 700;
+        margin-bottom: 6px;
+      }
+      #inspector .head .sub {
+        font-weight: 400;
+        font-size: 12px;
+        opacity: 0.7;
+      }
+      #inspector .close {
+        margin-left: auto;
+        min-width: 32px;
+        min-height: 32px;
+        border-radius: 8px;
+        font-size: 14px;
+      }
+      #inspector .rows {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 3px 12px;
+        font-size: 13px;
+      }
+      #inspector .rows div {
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      #inspector .bar {
+        position: relative;
+        grid-column: 1 / -1;
+        height: 6px;
+        border-radius: 3px;
+        background: rgba(255, 255, 255, 0.15);
+        margin-top: 4px;
+        padding: 0;
+        display: block;
+      }
+      #inspector .bar i {
+        position: absolute;
+        left: 0;
+        top: 0;
+        bottom: 0;
+        border-radius: 3px;
+        background: #d9a54a;
+      }
       #toast {
         position: absolute;
         left: 50%;
@@ -124,6 +190,14 @@
         <button id="speed-4">4×</button>
         <button id="speed-16">16×</button>
         <button id="newworld" aria-label="New world" title="New world">🌍</button>
+      </div>
+      <div id="inspector">
+        <div class="head">
+          <span id="insp-title"></span>
+          <span class="sub" id="insp-sub"></span>
+          <button class="close" id="insp-close" aria-label="Close">✕</button>
+        </div>
+        <div class="rows" id="insp-rows"></div>
       </div>
       <div id="toast"></div>
     </div>
