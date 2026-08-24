@@ -3,21 +3,15 @@ import {
   HUMAN,
   START_ANIMALS,
   TICKS_PER_YEAR,
-  YIELD,
+  VILLAGE,
   type AnimalSpec,
 } from './config';
+import { FETCH_FOOD, humanTree, type HumanCtx } from './ai';
 import { mulberry32, pick, type Rng } from './rng';
+import { assessNeed, housingShort, type Village } from './village';
 import { Terrain, World } from './world';
 
 export type Sex = 'm' | 'f';
-export type HumanState =
-  | 'idle'
-  | 'gather'
-  | 'fish'
-  | 'hunt'
-  | 'chop'
-  | 'build'
-  | 'wander';
 
 export interface Human {
   id: number;
@@ -32,7 +26,11 @@ export interface Human {
   wood: number;
   homeId: number; // hut id, -1 = homeless
   motherId: number;
-  state: HumanState;
+  villageId: number;
+  /** What the behaviour tree had them doing this tick, for the inspector. */
+  activity: string;
+  /** Set when a wolf is stalking them, so the tree can react. -1 = safe. */
+  huntedBy: number;
   tx: number; // current movement target (tile coords, center-ish)
   ty: number;
   workTile: number; // tile index being harvested / built on, -1 = none
@@ -64,6 +62,7 @@ export interface Hut {
   x: number; // tile coords
   y: number;
   occupants: number;
+  villageId: number;
 }
 
 export interface Stats {
@@ -73,6 +72,8 @@ export interface Stats {
   births: number;
   deaths: number;
   huts: number;
+  villages: number;
+  stored: number;
   rabbits: number;
   deer: number;
   wolves: number;
@@ -85,6 +86,9 @@ export class Sim {
   humans: Human[] = [];
   animals: Animal[] = [];
   huts: Hut[] = [];
+  villages: Village[] = [];
+  /** Refreshed on the village pass; read by hunters choosing a target. */
+  speciesCount: Record<AnimalKind, number> = { rabbit: 0, deer: 0, wolf: 0 };
   births = 0;
   deaths = 0;
   ticks = 0;
@@ -157,7 +161,9 @@ export class Sim {
       wood: 0,
       homeId: -1,
       motherId: -1,
-      state: 'idle',
+      villageId: -1,
+      activity: 'looking around',
+      huntedBy: -1,
       tx: x,
       ty: y,
       workTile: -1,
@@ -220,7 +226,7 @@ export class Sim {
 
   // ---------- helpers ----------
 
-  private nearbyWalkable(x: number, y: number, r: number): { x: number; y: number } {
+  nearbyWalkable(x: number, y: number, r: number): { x: number; y: number } {
     for (let i = 0; i < 20; i++) {
       const nx = x + (this.rng() - 0.5) * 2 * r;
       const ny = y + (this.rng() - 0.5) * 2 * r;
@@ -233,7 +239,7 @@ export class Sim {
    * Spiral outward from (cx, cy) and return the index of the closest tile
    * matching `match`, or -1. Cheap early-exit nearest-tile search.
    */
-  private findTile(
+  findTile(
     cx: number,
     cy: number,
     radius: number,
@@ -265,7 +271,7 @@ export class Sim {
     return -1;
   }
 
-  private moveToward(
+  moveToward(
     e: { x: number; y: number; stuck?: number },
     tx: number,
     ty: number,
@@ -291,11 +297,11 @@ export class Sim {
     return false;
   }
 
-  private tileCenter(i: number): { x: number; y: number } {
+  tileCenter(i: number): { x: number; y: number } {
     return { x: (i % this.world.w) + 0.5, y: Math.floor(i / this.world.w) + 0.5 };
   }
 
-  private animalById(id: number): Animal | undefined {
+  animalById(id: number): Animal | undefined {
     return this.animals.find((a) => a.id === id);
   }
 
@@ -308,10 +314,19 @@ export class Sim {
     const deadHumans = new Set<number>();
     const deadAnimals = new Set<number>();
 
+    // Publish who the wolves are stalking so the humans' tree can see it.
+    for (const h of this.humans) h.huntedBy = -1;
+    for (const a of this.animals) {
+      if (a.huntHumanId < 0) continue;
+      const victim = this.humans.find((h) => h.id === a.huntHumanId);
+      if (victim) victim.huntedBy = a.id;
+    }
+
     for (const h of this.humans) this.tickHuman(h, deadHumans, deadAnimals);
     for (const a of this.animals) this.tickAnimal(a, deadHumans, deadAnimals);
 
     if (this.ticks % 10 === 0) {
+      this.villagePass();
       this.matingPass();
       this.feedChildrenPass();
       this.claimHutsPass();
@@ -347,169 +362,133 @@ export class Sim {
       dead.add(h.id);
       return;
     }
-    if (h.hunger > HUMAN.EAT_AT && h.food > 0) {
-      h.food--;
-      h.hunger = Math.max(0, h.hunger - HUMAN.FOOD_VALUE);
-    }
 
-    const speed =
-      (adult ? HUMAN.SPEED : HUMAN.CHILD_SPEED) *
-      (h.age >= HUMAN.ELDER_AGE ? 0.75 : 1);
-
-    if (h.stuck > 30) {
-      // Hopelessly walled in on the way somewhere — give up on this plan.
-      h.state = 'idle';
-      h.stuck = 0;
-    }
-
-    switch (h.state) {
-      case 'idle':
-        this.decide(h);
-        break;
-
-      case 'wander':
-        if (this.moveToward(h, h.tx, h.ty, speed)) h.state = 'idle';
-        break;
-
-      case 'gather':
-        if (this.moveToward(h, h.tx, h.ty, speed)) {
-          if (this.world.harvestBerries(h.workTile)) h.food += YIELD.BERRIES;
-          h.state = 'idle';
-        }
-        break;
-
-      case 'fish':
-        if (this.moveToward(h, h.tx, h.ty, speed)) {
-          if (this.world.harvestFish(h.workTile)) h.food += YIELD.FISH;
-          h.state = 'idle';
-        }
-        break;
-
-      case 'chop':
-        if (this.moveToward(h, h.tx, h.ty, speed)) {
-          if (this.world.chopTree(h.workTile)) h.wood++;
-          h.state = 'idle';
-        }
-        break;
-
-      case 'build':
-        if (this.moveToward(h, h.tx, h.ty, speed)) {
-          const t = this.world.tiles[h.workTile];
-          if (!t.hut && h.wood >= HUMAN.HUT_WOOD_COST) {
-            h.wood -= HUMAN.HUT_WOOD_COST;
-            this.world.buildHut(h.workTile);
-            const c = this.tileCenter(h.workTile);
-            const hut: Hut = { id: this.nextId++, x: c.x - 0.5, y: c.y - 0.5, occupants: 1 };
-            this.huts.push(hut);
-            h.homeId = hut.id;
-          }
-          h.state = 'idle';
-        }
-        break;
-
-      case 'hunt': {
-        const prey = this.animalById(h.huntId);
-        if (!prey || deadAnimals.has(prey.id)) {
-          h.state = 'idle';
-          break;
-        }
-        this.moveToward(h, prey.x, prey.y, speed * 1.05);
-        if (Math.hypot(prey.x - h.x, prey.y - h.y) < 0.8) {
-          deadAnimals.add(prey.id);
-          h.food += prey.kind === 'deer' ? YIELD.DEER : YIELD.RABBIT;
-          h.state = 'idle';
-        } else if (Math.hypot(prey.x - h.x, prey.y - h.y) > HUMAN.SEARCH_RADIUS * 1.5) {
-          h.state = 'idle'; // prey escaped
-        }
-        break;
-      }
-    }
+    // The tree decides everything from here: it is re-run from the root each
+    // tick, so a starving villager or one being stalked drops what they are
+    // doing without any explicit transition.
+    const ctx: HumanCtx = {
+      sim: this,
+      h,
+      speed:
+        (adult ? HUMAN.SPEED : HUMAN.CHILD_SPEED) *
+        (h.age >= HUMAN.ELDER_AGE ? 0.75 : 1),
+      activity: 'idle',
+      deadAnimals,
+    };
+    humanTree.run(ctx);
+    h.activity = ctx.activity;
   }
 
-  private decide(h: Human): void {
-    const w = this.world;
-    const adult = isAdult(h);
-    h.stuck = 0;
+  // ---------- villages ----------
 
-    if (h.hunger > HUMAN.SEEK_FOOD_AT && h.food === 0) {
-      const berry = this.findTile(h.x, h.y, HUMAN.SEARCH_RADIUS, (i) => w.tiles[i].berries > 0);
-      if (berry >= 0) {
-        this.setWork(h, 'gather', berry);
-        return;
-      }
-      const fishSpot = this.findTile(h.x, h.y, HUMAN.SEARCH_RADIUS, (i) => w.tiles[i].fish > 0);
-      if (fishSpot >= 0) {
-        const shore = this.walkableNeighbor(fishSpot);
-        if (shore >= 0) {
-          h.state = 'fish';
-          h.workTile = fishSpot;
-          const c = this.tileCenter(shore);
-          h.tx = c.x;
-          h.ty = c.y;
-          return;
-        }
-      }
-      if (adult) {
-        const prey = this.nearestAnimal(h.x, h.y, HUMAN.SEARCH_RADIUS, (a) => a.kind !== 'wolf');
-        if (prey) {
-          h.state = 'hunt';
-          h.huntId = prey.id;
-          return;
-        }
-      }
-      // Nothing edible nearby — strike out in a random direction and retry.
-      this.wanderFrom(h, h.x, h.y, 10);
-      return;
-    }
-
-    if (adult && h.homeId < 0) {
-      if (h.wood >= HUMAN.HUT_WOOD_COST) {
-        const spot = this.findHutSpot(h);
-        if (spot >= 0) {
-          this.setWork(h, 'build', spot);
-          return;
-        }
-      } else {
-        const tree = this.findTile(h.x, h.y, HUMAN.SEARCH_RADIUS, (i) => w.tiles[i].tree);
-        if (tree >= 0) {
-          this.setWork(h, 'chop', tree);
-          return;
-        }
-      }
-    }
-
-    // Downtime: children shadow their mother, everyone else potters about home.
-    if (!adult) {
-      const mom = this.humans.find((m) => m.id === h.motherId);
-      if (mom && Math.hypot(mom.x - h.x, mom.y - h.y) > 3) {
-        h.state = 'wander';
-        h.tx = mom.x;
-        h.ty = mom.y;
-        return;
-      }
-    }
-    const hut = this.huts.find((q) => q.id === h.homeId);
-    const cx = hut ? hut.x + 0.5 : h.x;
-    const cy = hut ? hut.y + 0.5 : h.y;
-    this.wanderFrom(h, cx, cy, hut ? 5 : 8);
+  villageOf(h: Human): Village | null {
+    if (h.villageId < 0) return null;
+    return this.villages.find((v) => v.id === h.villageId) ?? null;
   }
 
-  private setWork(h: Human, state: HumanState, tile: number): void {
-    h.state = state;
-    h.workTile = tile;
+  /**
+   * Raise a hut for `h` and attach it to a village — joining the nearest one
+   * in range, or founding a new settlement if there is none.
+   */
+  raiseHut(h: Human, tile: number): void {
+    this.world.buildHut(tile);
     const c = this.tileCenter(tile);
-    h.tx = c.x;
-    h.ty = c.y;
+    const hut: Hut = {
+      id: this.nextId++,
+      x: c.x - 0.5,
+      y: c.y - 0.5,
+      occupants: 1,
+      villageId: -1,
+    };
+    this.huts.push(hut);
+    h.homeId = hut.id;
+
+    let village = this.nearestVillage(hut.x, hut.y, VILLAGE.JOIN_RADIUS);
+    if (!village) {
+      village = {
+        id: this.nextId++,
+        name: this.makeName(),
+        x: hut.x + 0.5,
+        y: hut.y + 0.5,
+        hutIds: [],
+        food: 0,
+        wood: 0,
+        memberCount: 0,
+        enRoute: 0,
+        need: 'food',
+        foundedTick: this.ticks,
+      };
+      this.villages.push(village);
+    }
+    hut.villageId = village.id;
+    village.hutIds.push(hut.id);
+    h.villageId = village.id;
   }
 
-  private wanderFrom(h: Human, cx: number, cy: number, r: number): void {
-    const p = this.nearbyWalkable(cx, cy, r);
-    h.state = 'wander';
-    h.tx = p.x;
-    h.ty = p.y;
+  private nearestVillage(x: number, y: number, radius: number): Village | null {
+    let best: Village | null = null;
+    let bestD = radius * radius;
+    for (const v of this.villages) {
+      const d = (v.x - x) ** 2 + (v.y - y) ** 2;
+      if (d < bestD) {
+        bestD = d;
+        best = v;
+      }
+    }
+    return best;
   }
 
-  private walkableNeighbor(tile: number): number {
+  /**
+   * The settlement-level tick: recentre each village on its huts, count its
+   * people, work out what it is short of, and take in nearby strays.
+   */
+  private villagePass(): void {
+    this.speciesCount = { rabbit: 0, deer: 0, wolf: 0 };
+    for (const a of this.animals) this.speciesCount[a.kind]++;
+
+    const members = new Map<number, number>();
+    const enRoute = new Map<number, number>();
+    for (const h of this.humans) {
+      if (h.villageId < 0) continue;
+      members.set(h.villageId, (members.get(h.villageId) ?? 0) + 1);
+      if (h.activity === FETCH_FOOD) {
+        enRoute.set(h.villageId, (enRoute.get(h.villageId) ?? 0) + 1);
+      }
+    }
+
+    for (const v of this.villages) {
+      v.hutIds = v.hutIds.filter((id) => this.huts.some((q) => q.id === id));
+      let sx = 0;
+      let sy = 0;
+      let n = 0;
+      for (const id of v.hutIds) {
+        const hut = this.huts.find((q) => q.id === id);
+        if (!hut) continue;
+        sx += hut.x + 0.5;
+        sy += hut.y + 0.5;
+        n++;
+      }
+      if (n) {
+        v.x = sx / n;
+        v.y = sy / n;
+      }
+      v.memberCount = members.get(v.id) ?? 0;
+      v.enRoute = enRoute.get(v.id) ?? 0;
+      v.need = assessNeed(v, housingShort(v));
+    }
+
+    // A village with nobody left in it is a ruin, not a settlement.
+    this.villages = this.villages.filter((v) => v.memberCount > 0 || v.hutIds.length > 0);
+
+    // Unaffiliated people standing in a village's shadow throw in with it.
+    for (const h of this.humans) {
+      if (h.villageId >= 0) continue;
+      const v = this.nearestVillage(h.x, h.y, VILLAGE.JOIN_RADIUS);
+      if (v) h.villageId = v.id;
+    }
+  }
+
+  walkableNeighbor(tile: number): number {
     const x = tile % this.world.w;
     const y = Math.floor(tile / this.world.w);
     for (let dy = -1; dy <= 1; dy++) {
@@ -522,7 +501,7 @@ export class Sim {
     return -1;
   }
 
-  private findHutSpot(h: Human): number {
+  findHutSpot(h: Human): number {
     const w = this.world;
     const free = (i: number): boolean => {
       const t = w.tiles[i];
@@ -558,7 +537,7 @@ export class Sim {
     return this.findTile(h.x, h.y, 10, free);
   }
 
-  private nearestAnimal(
+  nearestAnimal(
     x: number,
     y: number,
     radius: number,
@@ -588,15 +567,43 @@ export class Sim {
       ) {
         continue;
       }
-      const partner = this.humans.find(
-        (m) =>
-          m.sex === 'm' &&
-          isAdult(m) &&
-          m.mateCooldown <= 0 &&
-          m.hunger <= HUMAN.MATE_MAX_HUNGER &&
-          Math.hypot(m.x - f.x, m.y - f.y) < 4,
-      );
+      const partner = this.humans.find((m) => {
+        if (
+          m.sex !== 'm' ||
+          !isAdult(m) ||
+          m.mateCooldown > 0 ||
+          m.hunger > HUMAN.MATE_MAX_HUNGER
+        ) {
+          return false;
+        }
+        // Fellow villagers meet around the huts and the granary, so they pair
+        // up at settlement range. Villagers now work spread out across the
+        // fields, and requiring them to be standing side by side had all but
+        // stopped births.
+        const reach = f.villageId >= 0 && m.villageId === f.villageId ? 12 : 4;
+        return Math.hypot(m.x - f.x, m.y - f.y) < reach;
+      });
       if (!partner) continue;
+      const village = this.villageOf(f);
+      // Stock per head is the brake, applied as a gradient rather than a
+      // threshold. A hard cutoff synchronised the whole village: everyone
+      // bred the moment the store crossed the line, drained it, and then no
+      // child was born until that entire generation had aged out — which
+      // eventually took a village with it. Housing is deliberately not a
+      // second brake; on a map short of trees it pinned villages at their
+      // starting huts and stopped them growing at all.
+      if (village) {
+        const wellFed =
+          village.food / Math.max(1, village.memberCount * VILLAGE.BIRTH_FOOD_PER_CAPITA);
+        // The floor exists so a small village cannot age out to nothing for
+        // want of a single child. A large village that is already starving
+        // does not need it — leaving it in place let one grow from 50 to 138
+        // on an empty store and then starve three quarters of itself.
+        const floor =
+          village.memberCount < VILLAGE.FRAGILE_SIZE ? VILLAGE.MIN_BIRTH_CHANCE : 0;
+        const chance = Math.max(floor, Math.min(1, wellFed));
+        if (this.rng() > chance) continue;
+      }
       f.mateCooldown = HUMAN.MATE_COOLDOWN;
       partner.mateCooldown = Math.floor(HUMAN.MATE_COOLDOWN / 2);
       const baby = this.makeHuman(f.x, f.y, this.rng() < 0.5 ? 'f' : 'm', 0);
@@ -604,11 +611,17 @@ export class Sim {
       baby.food = 0;
       baby.motherId = f.id;
       baby.homeId = -1;
+      baby.villageId = f.villageId;
       this.humans.push(baby);
       this.births++;
     }
   }
 
+  /**
+   * A hungry child takes food from any adult beside them. Village children can
+   * also help themselves at the granary, but a toddler cannot walk halfway
+   * across the island before starving, so this stays their main meal.
+   */
   private feedChildrenPass(): void {
     for (const kid of this.humans) {
       if (isAdult(kid) || kid.food > 0 || kid.hunger < HUMAN.SEEK_FOOD_AT) continue;
@@ -631,6 +644,7 @@ export class Sim {
       if (hut) {
         hut.occupants++;
         h.homeId = hut.id;
+        if (hut.villageId >= 0) h.villageId = hut.villageId;
       }
     }
   }
@@ -830,6 +844,8 @@ export class Sim {
       else if (a.kind === 'deer') deer++;
       else wolves++;
     }
+    let stored = 0;
+    for (const v of this.villages) stored += v.food;
     return {
       year: Math.floor(this.ticks / TICKS_PER_YEAR),
       population: this.humans.length,
@@ -837,6 +853,8 @@ export class Sim {
       births: this.births,
       deaths: this.deaths,
       huts: this.huts.length,
+      villages: this.villages.length,
+      stored: Math.round(stored),
       rabbits,
       deer,
       wolves,

@@ -21,7 +21,7 @@ renderer.attachInput((wx, wy) => selectAt(wx, wy));
 
 const topbar = document.getElementById('topbar')!;
 const statEls = new Map<string, HTMLElement>();
-for (const key of ['year', 'pop', 'births', 'deaths', 'huts', 'wild']) {
+for (const key of ['year', 'pop', 'births', 'deaths', 'huts', 'village', 'wild']) {
   const el = document.createElement('div');
   el.className = 'stat';
   topbar.appendChild(el);
@@ -36,6 +36,8 @@ function updateStats(): void {
   statEls.get('births')!.innerHTML = `👶 <b>${s.births}</b>`;
   statEls.get('deaths')!.innerHTML = `💀 <b>${s.deaths}</b>`;
   statEls.get('huts')!.innerHTML = `🏠 <b>${s.huts}</b>`;
+  statEls.get('village')!.innerHTML =
+    `🛖 <b>${s.villages}</b> <span style="opacity:.7">📦 ${s.stored}</span>`;
   statEls.get('wild')!.innerHTML =
     `🐇 <b>${s.rabbits}</b> 🦌 <b>${s.deer}</b> 🐺 <b>${s.wolves}</b>`;
 }
@@ -85,16 +87,6 @@ function selectedEntity(): Human | Animal | null {
     : (sim.animals.find((a) => a.id === selection!.id) ?? null);
 }
 
-const HUMAN_ACTIVITY: Record<string, string> = {
-  idle: 'deciding what to do',
-  wander: 'wandering around',
-  gather: 'picking berries 🫐',
-  fish: 'going fishing 🎣',
-  hunt: 'hunting 🏹',
-  chop: 'chopping wood 🪓',
-  build: 'building a hut 🔨',
-};
-
 function row(label: string, value: string): string {
   return `<div>${label}</div><div style="text-align:right">${value}</div>`;
 }
@@ -122,9 +114,17 @@ function updateInspector(): void {
     inspSub.textContent = `${stage}, ${Math.floor(h.age)} y`;
     const kids =
       h.sex === 'f' ? sim.humans.filter((k) => k.motherId === h.id).length : -1;
+    const village = sim.villageOf(h);
     inspRows.innerHTML =
-      row('Doing', HUMAN_ACTIVITY[h.state] ?? h.state) +
+      row('Doing', h.activity) +
       row('Home', h.homeId >= 0 ? 'has a hut 🏠' : 'homeless') +
+      row(
+        'Village',
+        village ? `${village.name} (${village.memberCount})` : 'no village',
+      ) +
+      (village
+        ? row('Granary', `🍖 ${Math.round(village.food)} · 🪵 ${village.wood}`)
+        : '') +
       row('Carrying', `🍖 ${h.food} food, 🪵 ${h.wood} wood`) +
       (kids >= 0 ? row('Children', String(kids)) : '') +
       row('Hunger', `${h.hunger.toFixed(0)} / 100`) +
