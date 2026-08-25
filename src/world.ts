@@ -33,12 +33,15 @@ export class World {
   readonly h = MAP_H;
   readonly tiles: Tile[] = [];
   readonly seed: number;
+  /** Seeded stream for anything random after worldgen, so runs replay. */
+  private regrowRng: Rng;
   /** tile indices whose looks changed since the renderer last drained this */
   dirty: number[] = [];
   private regrowing: Set<number> = new Set();
 
   constructor(seed: number) {
     this.seed = seed;
+    this.regrowRng = mulberry32(seed ^ 0x9e37);
     this.generate();
   }
 
@@ -277,7 +280,7 @@ export class World {
 
   private scheduleRegrow(i: number, delay: number): void {
     // Stagger regrowth a bit so a stripped patch doesn't pop back all at once.
-    this.tiles[i].regrowAt = delay + Math.floor(Math.random() * delay * 0.5);
+    this.tiles[i].regrowAt = delay + Math.floor(this.regrowRng() * delay * 0.5);
     this.regrowing.add(i);
   }
 

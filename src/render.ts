@@ -181,6 +181,18 @@ export class Renderer {
     const px = 1 / this.zoom; // one screen pixel in tile units
     const minR = 1.6 * px;
 
+    // Granaries sit under everyone, marking each village centre.
+    for (const v of sim.villages) {
+      const r = 0.62;
+      ctx.fillStyle = '#3a2a1a';
+      ctx.fillRect(v.x - r, v.y - r * 0.75, r * 2, r * 1.5);
+      ctx.fillStyle = '#c8952f';
+      ctx.fillRect(v.x - r, v.y - r * 0.75, r * 2, r * 0.5);
+      ctx.strokeStyle = 'rgba(0,0,0,0.5)';
+      ctx.lineWidth = Math.max(0.04, px);
+      ctx.strokeRect(v.x - r, v.y - r * 0.75, r * 2, r * 1.5);
+    }
+
     for (const a of sim.animals) {
       let color = '#e9e2cf';
       let r = 0.17;
@@ -206,6 +218,24 @@ export class Renderer {
       ctx.arc(h.x, h.y, Math.max(adult ? 0.26 : 0.17, minR), 0, Math.PI * 2);
       ctx.fill();
       if (this.zoom > 8) ctx.stroke();
+    }
+
+    if (this.zoom > 10) {
+      ctx.save();
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.font = '600 11px system-ui, sans-serif';
+      ctx.textAlign = 'center';
+      for (const v of sim.villages) {
+        const sx = v.x * this.zoom + ox;
+        const sy = v.y * this.zoom + oy;
+        if (sx < -60 || sy < -30 || sx > rect.width + 60 || sy > rect.height + 30) continue;
+        ctx.fillStyle = 'rgba(0,0,0,0.55)';
+        ctx.fillText(v.name, sx + 1, sy - 11);
+        ctx.fillStyle = '#ffe9b8';
+        ctx.fillText(v.name, sx, sy - 12);
+      }
+      ctx.restore();
+      ctx.setTransform(dpr * this.zoom, 0, 0, dpr * this.zoom, dpr * ox, dpr * oy);
     }
 
     if (selected) {

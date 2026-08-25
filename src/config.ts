@@ -26,6 +26,41 @@ export const HUMAN = {
   START_POP: 14,
 };
 
+export const VILLAGE = {
+  /** A new hut this close to a village joins it instead of founding one. */
+  JOIN_RADIUS: 20,
+  /** Food a villager keeps on hand; anything above this goes to the granary. */
+  KEEP_FOOD: 3,
+  /** Least surplus worth a trip to the granary; scales up with distance. */
+  DEPOSIT_AT: 6,
+  /** Hands are full at this much surplus — head home whatever the distance. */
+  CARRY_CAP: 18,
+  WITHDRAW: 2,
+  /** Below this per head the village considers itself hungry. */
+  TARGET_FOOD_PER_CAPITA: 3,
+  /** Above this it stops stockpiling food and does something else. */
+  COMFORTABLE_FOOD_PER_CAPITA: 5,
+  TARGET_WOOD: 12,
+  /**
+   * A village only raises children it can feed. Deliberately set above
+   * COMFORTABLE_FOOD_PER_CAPITA: villages stock up to that level and stop, so
+   * a lower bar here meant every settlement was always rich enough to breed
+   * flat out and the brake never engaged at all. Growth now needs a genuine
+   * surplus, and tapers as a village outgrows what its land yields per head.
+   */
+  BIRTH_FOOD_PER_CAPITA: 9,
+  /** Past this, a villager heads for the granary regardless of the queue. */
+  DESPERATE_HUNGER: 72,
+  /** Below this many people a village is one bad decade from vanishing. */
+  FRAGILE_SIZE: 20,
+  /** Floor on the birth gradient, so a small village still has children. */
+  MIN_BIRTH_CHANCE: 0.03,
+  /** Hunters leave a species alone below this, so none is hunted to nothing. */
+  HUNT_FLOOR: 60,
+  /** How far a villager will walk to use the granary. */
+  GRANARY_REACH: 45,
+};
+
 export const YIELD = {
   BERRIES: 2,
   FISH: 3,
